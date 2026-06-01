@@ -1,0 +1,123 @@
+#include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ===== DHT =====
+#define DHTPIN 7
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ===== LCD I2C =====
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ===== RGB =====
+#define RED 9
+#define GREEN 10
+#define BLUE 11
+
+// ===== BUZZER =====
+#define BUZZER 6
+
+void setup() {
+  Serial.begin(9600);
+
+  dht.begin();
+
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(RED, OUTPUT);
+  pinMode(GREEN, OUTPUT);
+  pinMode(BLUE, OUTPUT);
+
+  pinMode(BUZZER, OUTPUT);
+
+  lcd.setCursor(0,0);
+  lcd.print("Iniciando...");
+  delay(1500);
+  lcd.clear();
+}
+
+// ===== RGB =====
+void setColor(int r, int g, int b) {
+  analogWrite(RED, r);
+  analogWrite(GREEN, g);
+  analogWrite(BLUE, b);
+}
+
+// ===== SONS =====
+void beepFast() {
+  for (int i = 0; i < 5; i++) {
+    tone(BUZZER, 2000);
+    delay(100);
+    noTone(BUZZER);
+    delay(100);
+  }
+}
+
+void beepMedium() {
+  for (int i = 0; i < 3; i++) {
+    tone(BUZZER, 1500);
+    delay(300);
+    noTone(BUZZER);
+    delay(300);
+  }
+}
+
+// ===== LOOP =====
+void loop() {
+
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+
+  // Se falhar leitura
+  if (isnan(temp) || isnan(hum)) {
+    lcd.setCursor(0,0);
+    lcd.print("Erro DHT11     ");
+    lcd.setCursor(0,1);
+    lcd.print("                ");
+    return;
+  }
+
+  Serial.print("Temp: ");
+  Serial.print(temp);
+  Serial.print(" C | Hum: ");
+  Serial.println(hum);
+
+  // ===== LCD =====
+  lcd.setCursor(0,0);
+  lcd.print("Temp: ");
+  lcd.print(temp);
+  lcd.print(" C   ");
+
+  lcd.setCursor(0,1);
+  lcd.print("Hum: ");
+  lcd.print(hum);
+  lcd.print(" %   ");
+
+  // ===== LÓGICA =====
+
+  if (temp > 40 || hum < 20 || hum > 98) {
+    setColor(255, 0, 0);
+    beepFast();
+  }
+
+  else if ((temp >= 35 && temp <= 40) || hum < 30 || hum > 70) {
+    setColor(255, 80, 0);
+    beepMedium();
+  }
+
+  else if ((temp >= 30 && temp < 35) || hum < 40 || hum > 60) {
+    setColor(255, 255, 0);
+  }
+
+  else if (temp >= 22 && temp < 30 && hum >= 40 && hum <= 50) {
+    setColor(0, 255, 0);
+  }
+
+  else {
+    setColor(0, 0, 255);
+  }
+
+  delay(1000);
+}
