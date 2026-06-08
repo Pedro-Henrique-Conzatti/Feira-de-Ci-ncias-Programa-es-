@@ -1,0 +1,39 @@
+| Temperatura                     | Pontos |
+| ------------------------------- | ------ |
+| 22°C a 26°C                     | 0      |
+| 27°C a 30°C                     | 5      |
+| 31°C a 34°C                     | 10     |
+| 35°C a 38°C                     | 15     |
+| Acima de 38°C ou abaixo de 18°C | 25     |
+
+
+| Umidade                       | Pontos |
+| ----------------------------- | ------ |
+| 40% a 60%                     | 0      |
+| 30% a 39% ou 61% a 70%        | 5      |
+| 20% a 29% ou 71% a 80%        | 10     |
+| 10% a 19% ou 81% a 90%        | 15     |
+| Abaixo de 10% ou acima de 90% | 25     |
+
+
+| Leitura      | Pontos |
+| ------------ | ------ |
+| 0 a 200      | 0      |
+| 201 a 400    | 5      |
+| 401 a 600    | 10     |
+| 601 a 800    | 15     |
+| Acima de 800 | 25     |
+
+
+| Leitura      | Pontos |
+| ------------ | ------ |
+| 0 a 200      | 0      |
+| 201 a 400    | 5      |
+| 401 a 600    | 10     |
+| 601 a 800    | 15     |
+| Acima de 800 | 25     |
+
+
+Formula do IQRA:
+
+IQRA = Temperatura + Umidade + MQ135 + MQ2
