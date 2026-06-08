@@ -1,0 +1,177 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Bonezegei_DHT11.h>
+
+// =========================
+// LCD I2C 20x4
+// =========================
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// =========================
+// DHT11 no pino 2
+// =========================
+Bonezegei_DHT11 dht(2);
+
+// =========================
+// LED RGB
+// R = 9
+// G = 10
+// B = 11
+// =========================
+const int redPin = 9;
+const int greenPin = 10;
+const int bluePin = 11;
+
+// =========================
+// Função para definir cor
+// =========================
+void setColor(int r, int g, int b) {
+
+  analogWrite(redPin, r);
+  analogWrite(greenPin, g);
+  analogWrite(bluePin, b);
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // Inicializa DHT11
+  dht.begin();
+
+  // Inicializa LCD
+  lcd.init();
+  lcd.backlight();
+
+  // Configura LED RGB
+  pinMode(redPin, OUTPUT);
+  pinMode(greenPin, OUTPUT);
+  pinMode(bluePin, OUTPUT);
+
+  // Tela inicial
+  lcd.setCursor(0, 0);
+  lcd.print("Sensor DHT11");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Iniciando...");
+
+  delay(2000);
+
+  lcd.clear();
+}
+
+void loop() {
+
+  // Faz leitura do sensor
+  if (dht.getData()) {
+
+    // Valores do sensor
+    float temperatura = dht.getTemperature();
+    float umidade = dht.getHumidity();
+
+    // =========================
+    // MOSTRA TEMPERATURA
+    // =========================
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("TEMPERATURA");
+
+    lcd.setCursor(0, 1);
+    lcd.print(temperatura, 1);
+    lcd.print((char)223);
+    lcd.print("C");
+
+    Serial.print("Temperatura: ");
+    Serial.print(temperatura, 1);
+    Serial.println(" C");
+
+    delay(10000);
+
+    // =========================
+    // NOVA LEITURA
+    // =========================
+    dht.getData();
+
+    umidade = dht.getHumidity();
+
+    // =========================
+    // MOSTRA UMIDADE
+    // =========================
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("UMIDADE");
+
+    lcd.setCursor(0, 1);
+    lcd.print(umidade, 1);
+    lcd.print("%");
+
+    Serial.print("Umidade: ");
+    Serial.print(umidade, 1);
+    Serial.println("%");
+
+    // =========================
+    // CONTROLE DO LED RGB
+    // =========================
+
+    // >= 80% = AZUL piscando
+    if (umidade >= 80) {
+
+      // Pisca azul durante 10 segundos
+      for (int i = 0; i < 5; i++) {
+
+        // Liga azul
+        setColor(0, 0, 255);
+        delay(500);
+
+        // Desliga
+        setColor(0, 0, 0);
+        delay(1000);
+      }
+    }
+
+    // 60% a 79% = VERDE
+    else if (umidade >= 60) {
+
+      setColor(0, 255, 0);
+      delay(10000);
+    }
+
+    // 40% a 59% = AMARELO
+    else if (umidade >= 40) {
+
+      setColor(255, 155, 0);
+      delay(10000);
+    }
+
+    // 20% a 39% = LARANJA
+    else if (umidade >= 20) {
+
+      setColor(255, 80, 0);
+      delay(10000);
+    }
+
+    // < 20% = VERMELHO
+    else {
+
+      setColor(255, 0, 0);
+      delay(10000);
+    }
+
+  } else {
+
+    // Erro no sensor
+    lcd.clear();
+
+    lcd.setCursor(0, 1);
+    lcd.print("Erro no DHT11");
+
+    Serial.println("Erro ao ler sensor");
+
+    // LED vermelho indicando erro
+    setColor(255, 0, 0);
+
+    delay(2000);
+  }
+}
