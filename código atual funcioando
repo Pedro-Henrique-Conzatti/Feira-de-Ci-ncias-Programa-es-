@@ -1,0 +1,280 @@
+#include <DHT.h>
+
+// =====================
+// DHT11
+// =====================
+
+#define DHTPIN 7
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// =====================
+// SENSORES MQ
+// =====================
+
+#define MQ135 A0
+#define MQ2   A1
+
+// =====================
+// LED RGB
+// =====================
+
+#define RED   9
+#define GREEN 10
+#define BLUE  11
+
+// =====================
+// RGB
+// =====================
+
+void setColor(int r, int g, int b) {
+  analogWrite(RED, r);
+  analogWrite(GREEN, g);
+  analogWrite(BLUE, b);
+}
+
+// =====================
+// FUNÇÕES DE PONTUAÇÃO
+// =====================
+
+int pontosTemperatura(float t) {
+
+  if (t < 18 || t > 38)
+    return 25;
+  else if (t >= 35)
+    return 15;
+  else if (t >= 31)
+    return 10;
+  else if (t >= 27)
+    return 5;
+
+  return 0;
+}
+
+int pontosUmidade(float h) {
+
+  if (h < 10 || h > 90)
+    return 25;
+
+  else if ((h >= 10 && h < 20) ||
+           (h > 80 && h <= 90))
+    return 15;
+
+  else if ((h >= 20 && h < 30) ||
+           (h > 70 && h <= 80))
+    return 10;
+
+  else if ((h >= 30 && h < 40) ||
+           (h > 60 && h <= 70))
+    return 5;
+
+  return 0;
+}
+
+int pontosMQ(int valor) {
+
+  if (valor > 800)
+    return 25;
+  else if (valor > 600)
+    return 15;
+  else if (valor > 400)
+    return 10;
+  else if (valor > 200)
+    return 5;
+
+  return 0;
+}
+
+// =====================
+// SETUP
+// =====================
+
+void setup() {
+
+  Serial.begin(9600);
+
+  dht.begin();
+
+  pinMode(RED, OUTPUT);
+  pinMode(GREEN, OUTPUT);
+  pinMode(BLUE, OUTPUT);
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println("      SISTEMA IQRA INICIADO");
+  Serial.println("======================================");
+}
+
+// =====================
+// LOOP
+// =====================
+
+void loop() {
+
+  float temperatura = dht.readTemperature();
+  float umidade = dht.readHumidity();
+
+  int mq135 = analogRead(MQ135);
+  int mq2 = analogRead(MQ2);
+
+  if (isnan(temperatura) || isnan(umidade)) {
+
+    Serial.println("ERRO: DHT11 nao respondeu");
+    delay(2000);
+    return;
+  }
+
+  // =====================
+  // CALCULO DOS PONTOS
+  // =====================
+
+  int pTemp = pontosTemperatura(temperatura);
+  int pUmid = pontosUmidade(umidade);
+  int pMQ135 = pontosMQ(mq135);
+  int pMQ2 = pontosMQ(mq2);
+
+  // =====================
+  // IQRA
+  // =====================
+
+  int iqra = pTemp + pUmid + pMQ135 + pMQ2;
+
+  int nivel = (iqra / 10) + 1;
+
+  if (nivel > 10)
+    nivel = 10;
+
+  // =====================
+  // LED RGB
+  // =====================
+
+  switch (nivel) {
+
+    case 1: // Roxo
+      setColor(128, 0, 255);
+      break;
+
+    case 2: // Azul
+      setColor(0, 0, 255);
+      break;
+
+    case 3: // Ciano
+      setColor(0, 255, 255);
+      break;
+
+    case 4: // Verde
+      setColor(0, 255, 0);
+      break;
+
+    case 5: // Verde Forte
+      setColor(0, 180, 0);
+      break;
+
+    case 6: // Verde-Amarelado
+      setColor(180, 255, 0);
+      break;
+
+    case 7: // Amarelo
+      setColor(255, 255, 0);
+      break;
+
+    case 8: // Laranja
+      setColor(255, 120, 0);
+      break;
+
+    case 9: // Vermelho
+      setColor(255, 0, 0);
+      break;
+
+    case 10: // Vermelho Piscando
+
+      setColor(255, 0, 0);
+      delay(250);
+
+      setColor(0, 0, 0);
+      delay(250);
+
+      break;
+  }
+
+  // =====================
+  // QUALIDADE
+  // =====================
+
+  String qualidade;
+
+  if (nivel == 1)
+    qualidade = "Excelente";
+  else if (nivel == 2)
+    qualidade = "Muito Boa";
+  else if (nivel == 3)
+    qualidade = "Boa";
+  else if (nivel == 4)
+    qualidade = "Aceitavel";
+  else if (nivel == 5)
+    qualidade = "Moderada";
+  else if (nivel == 6)
+    qualidade = "Atencao";
+  else if (nivel == 7)
+    qualidade = "Ruim";
+  else if (nivel == 8)
+    qualidade = "Muito Ruim";
+  else if (nivel == 9)
+    qualidade = "Critica";
+  else
+    qualidade = "PERIGO MAXIMO";
+
+  // =====================
+  // MONITOR SERIAL
+  // =====================
+
+  Serial.println();
+  Serial.println("======================================");
+  Serial.println("       SISTEMA IQRA - MONITOR");
+  Serial.println("======================================");
+
+  Serial.print("Temperatura : ");
+  Serial.print(temperatura);
+  Serial.println(" C");
+
+  Serial.print("Umidade     : ");
+  Serial.print(umidade);
+  Serial.println(" %");
+
+  Serial.print("MQ-135      : ");
+  Serial.println(mq135);
+
+  Serial.print("MQ-2        : ");
+  Serial.println(mq2);
+
+  Serial.println("--------------------------------------");
+
+  Serial.print("Pontos Temp : ");
+  Serial.println(pTemp);
+
+  Serial.print("Pontos Umid : ");
+  Serial.println(pUmid);
+
+  Serial.print("Pontos MQ135: ");
+  Serial.println(pMQ135);
+
+  Serial.print("Pontos MQ2  : ");
+  Serial.println(pMQ2);
+
+  Serial.println("--------------------------------------");
+
+  Serial.print("IQRA        : ");
+  Serial.println(iqra);
+
+  Serial.print("Nivel       : ");
+  Serial.print(nivel);
+  Serial.println("/10");
+
+  Serial.print("Qualidade   : ");
+  Serial.println(qualidade);
+
+  Serial.println("======================================");
+
+  delay(3000);
+}
