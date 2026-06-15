@@ -1,97 +1,49 @@
 #include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-// =====================
-// DHT11
-// =====================
-
+// ===== DHT11 =====
 #define DHTPIN 7
 #define DHTTYPE DHT11
-
 DHT dht(DHTPIN, DHTTYPE);
 
-// =====================
-// SENSORES MQ
-// =====================
+// ===== MQ135 / MQ2 =====
+#define MQ135PIN A0
+#define MQ2PIN A1
 
-#define MQ135 A0
-#define MQ2   A1
-
-// =====================
-// LED RGB
-// =====================
-
-#define RED   9
+// ===== RGB =====
+#define RED 9
 #define GREEN 10
-#define BLUE  11
+#define BLUE 11
 
-// =====================
-// RGB
-// =====================
+// ===== BUZZER =====
+#define BUZZER 6
 
-void setColor(int r, int g, int b) {
-  analogWrite(RED, r);
-  analogWrite(GREEN, g);
-  analogWrite(BLUE, b);
-}
+// ===== LCD I2C 16x2 =====
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// =====================
-// FUNÇÕES DE PONTUAÇÃO
-// =====================
+// ===== CONTROLE DE TELAS =====
+unsigned long lastScreenChange = 0;
+unsigned long lastSensorRead = 0;
+const unsigned long SCREEN_INTERVAL = 10000; // 10s por tela
+const unsigned long SENSOR_INTERVAL = 1000;  // leitura sensores cada 1s
+int currentScreen = 0; // 0..3
 
-int pontosTemperatura(float t) {
+// ===== VARIÁVEIS GLOBAIS DOS SENSORES =====
+float temp = 0;
+float hum = 0;
+int mq135Raw = 0;
+int mq2Raw = 0;
+float mq135ppm = 0;
+float mq2ppm = 0;
+int iqra = 1; // 1 (ótimo) a 10 (péssimo)
 
-  if (t < 18 || t > 38)
-    return 25;
-  else if (t >= 35)
-    return 15;
-  else if (t >= 31)
-    return 10;
-  else if (t >= 27)
-    return 5;
-
-  return 0;
-}
-
-int pontosUmidade(float h) {
-
-  if (h < 10 || h > 90)
-    return 25;
-
-  else if ((h >= 10 && h < 20) ||
-           (h > 80 && h <= 90))
-    return 15;
-
-  else if ((h >= 20 && h < 30) ||
-           (h > 70 && h <= 80))
-    return 10;
-
-  else if ((h >= 30 && h < 40) ||
-           (h > 60 && h <= 70))
-    return 5;
-
-  return 0;
-}
-
-int pontosMQ(int valor) {
-
-  if (valor > 800)
-    return 25;
-  else if (valor > 600)
-    return 15;
-  else if (valor > 400)
-    return 10;
-  else if (valor > 200)
-    return 5;
-
-  return 0;
-}
-
-// =====================
-// SETUP
-// =====================
+// ===== BUZZER STATE (não bloqueante) =====
+bool buzzerOn = false;
+unsigned long buzzerToggleTime = 0;
+bool buzzerState = false;
 
 void setup() {
-
   Serial.begin(9600);
 
   dht.begin();
@@ -99,182 +51,246 @@ void setup() {
   pinMode(RED, OUTPUT);
   pinMode(GREEN, OUTPUT);
   pinMode(BLUE, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
 
-  Serial.println();
-  Serial.println("======================================");
-  Serial.println("      SISTEMA IQRA INICIADO");
-  Serial.println("======================================");
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Projeto Feira");
+  lcd.setCursor(0, 1);
+  lcd.print("Iniciando...");
+  delay(2000);
+  lcd.clear();
 }
 
-// =====================
-// LOOP
-// =====================
+// ===== RGB =====
+void setColor(int r, int g, int b) {
+  analogWrite(RED, r);
+  analogWrite(GREEN, g);
+  analogWrite(BLUE, b);
+}
+
+// ===== CONVERSÃO MQ135 -> ppm estimado (CO2 aproximado) =====
+float convertMQ135ToPPM(int raw) {
+  // Estimativa simplificada baseada na leitura analógica (0-1023)
+  // Faixa aproximada: 400 a 2000 ppm
+  float ppm = map(raw, 0, 1023, 400, 2000);
+  return ppm;
+}
+
+// ===== CONVERSÃO MQ2 -> ppm estimado (gás/fumaça) =====
+float convertMQ2ToPPM(int raw) {
+  // Estimativa simplificada (0-1023 -> 200-10000 ppm aprox)
+  float ppm = map(raw, 0, 1023, 200, 10000);
+  return ppm;
+}
+
+// ===== CÁLCULO DO IQRA (1 a 10, 10 = pior) =====
+int calcularIQRA(float t, float h, float mq135, float mq2) {
+  int score = 1;
+
+  // Temperatura
+  if (t > 40) score = max(score, 10);
+  else if (t >= 35) score = max(score, 8);
+  else if (t >= 30) score = max(score, 5);
+  else if (t < 18) score = max(score, 4);
+
+  // Umidade
+  if (h < 20 || h > 98) score = max(score, 10);
+  else if (h < 30 || h > 70) score = max(score, 8);
+  else if (h < 40 || h > 60) score = max(score, 5);
+
+  // MQ135 (qualidade do ar - CO2 equivalente)
+  if (mq135 > 1500) score = max(score, 10);
+  else if (mq135 > 1000) score = max(score, 8);
+  else if (mq135 > 700) score = max(score, 5);
+
+  // MQ2 (gás/fumaça)
+  if (mq2 > 6000) score = max(score, 10);
+  else if (mq2 > 3000) score = max(score, 8);
+  else if (mq2 > 1000) score = max(score, 5);
+
+  return score;
+}
+
+// ===== ATUALIZA RGB BASEADO NO IQRA (1 cor por nivel) =====
+void atualizarRGB(int nivel) {
+  switch (nivel) {
+    case 1:  setColor(0, 0, 255);     break; // Azul        - Excelente
+    case 2:  setColor(0, 255, 255);   break; // Ciano       - Bom
+    case 3:  setColor(0, 255, 0);     break; // Verde       - Bom
+    case 4:  setColor(150, 255, 0);   break; // Verde-limao - Atencao
+    case 5:  setColor(255, 255, 0);   break; // Amarelo     - Atencao
+    case 6:  setColor(255, 180, 0);   break; // Amarelo-ouro- Atencao
+    case 7:  setColor(255, 80, 0);    break; // Laranja     - Perigoso
+    case 8:  setColor(255, 0, 150);   break; // Rosa/Magenta- Perigoso
+    case 9:  setColor(150, 0, 255);   break; // Roxo        - Critico
+    case 10: setColor(255, 0, 0);     break; // Vermelho    - Critico
+    default: setColor(255, 255, 255); break; // Branco      - Erro/fallback
+  }
+}
+
+// ===== BUZZER NÃO BLOQUEANTE (só nível 10) =====
+void atualizarBuzzer(int nivel) {
+  if (nivel >= 10) {
+    buzzerOn = true;
+  } else {
+    buzzerOn = false;
+    noTone(BUZZER);
+    buzzerState = false;
+  }
+
+  if (buzzerOn) {
+    unsigned long now = millis();
+    if (now - buzzerToggleTime >= 150) {
+      buzzerToggleTime = now;
+      buzzerState = !buzzerState;
+      if (buzzerState) {
+        tone(BUZZER, 2000);
+      } else {
+        noTone(BUZZER);
+      }
+    }
+  }
+}
+
+// ===== LEITURA DOS SENSORES =====
+void lerSensores() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+
+  if (!isnan(t)) temp = t;
+  if (!isnan(h)) hum = h;
+
+  mq135Raw = analogRead(MQ135PIN);
+  mq2Raw = analogRead(MQ2PIN);
+
+  mq135ppm = convertMQ135ToPPM(mq135Raw);
+  mq2ppm = convertMQ2ToPPM(mq2Raw);
+
+  iqra = calcularIQRA(temp, hum, mq135ppm, mq2ppm);
+
+  Serial.print("Temp: ");
+  Serial.print(temp);
+  Serial.print(" C | Hum: ");
+  Serial.print(hum);
+  Serial.print(" % | MQ135: ");
+  Serial.print(mq135ppm);
+  Serial.print(" ppm | MQ2: ");
+  Serial.print(mq2ppm);
+  Serial.print(" ppm | IQRA: ");
+  Serial.println(iqra);
+}
+
+// ===== LIMIARES DE NIVEL (STATUS GERAL) =====
+const int NIVEL_1  = 1;
+const int NIVEL_2  = 2;
+const int NIVEL_3  = 3;
+const int NIVEL_4  = 4;
+const int NIVEL_5  = 5;
+const int NIVEL_6  = 6;
+const int NIVEL_7  = 7;
+const int NIVEL_8  = 8;
+const int NIVEL_9  = 9;
+const int NIVEL_10 = 10;
+
+// ===== STATUS TEXTUAL DO IQRA =====
+String statusIQRA(int nivel) {
+  if (nivel >= NIVEL_9)  return "Critico!";
+  if (nivel >= NIVEL_7)  return "Perigoso";
+  if (nivel >= NIVEL_4)  return "Atencao";
+  if (nivel >= NIVEL_2)  return "Bom";
+  return "Excelente";
+}
+
+// ===== NIVEL SIMPLES PARA O MQ135 (qualidade do ar) =====
+String nivelMQ135(float ppm) {
+  if (ppm > 1500) return "Muito poluido";
+  if (ppm > 1000) return "Poluido";
+  if (ppm > 700) return "Moderado";
+  return "Ar limpo";
+}
+
+// ===== NIVEL SIMPLES PARA O MQ2 (gas/fumaca) =====
+String nivelMQ2(float ppm) {
+  if (ppm > 6000) return "Muito gas!";
+  if (ppm > 3000) return "Gas alto";
+  if (ppm > 1000) return "Gas moderado";
+  return "Sem gas";
+}
+
+// ===== TELAS DO LCD =====
+void mostrarTela(int tela) {
+  lcd.clear();
+
+  switch (tela) {
+    case 0: // Temp / Umidade
+      lcd.setCursor(0, 0);
+      lcd.print("Temperatura: ");
+      lcd.print(temp, 1);
+      lcd.print((char)223);
+      lcd.print("C");
+
+      lcd.setCursor(0, 1);
+      lcd.print("Umidade: ");
+      lcd.print(hum, 0);
+      lcd.print("%");
+      break;
+
+    case 1: // MQ135
+      lcd.setCursor(0, 0);
+      lcd.print("Qualidade do ar:");
+
+      lcd.setCursor(0, 1);
+      lcd.print(nivelMQ135(mq135ppm));
+      break;
+
+    case 2: // MQ2
+      lcd.setCursor(0, 0);
+      lcd.print("Gas / Fumaca:");
+
+      lcd.setCursor(0, 1);
+      lcd.print(nivelMQ2(mq2ppm));
+      break;
+
+    case 3: // IQRA + Status
+      lcd.setCursor(0, 0);
+      lcd.print("Nivel: ");
+      lcd.print(iqra);
+      lcd.print("/10");
+
+      lcd.setCursor(0, 1);
+      lcd.print("Status: ");
+      lcd.print(statusIQRA(iqra));
+      break;
+  }
+}
 
 void loop() {
+  unsigned long now = millis();
 
-  float temperatura = dht.readTemperature();
-  float umidade = dht.readHumidity();
-
-  int mq135 = analogRead(MQ135);
-  int mq2 = analogRead(MQ2);
-
-  if (isnan(temperatura) || isnan(umidade)) {
-
-    Serial.println("ERRO: DHT11 nao respondeu");
-    delay(2000);
-    return;
+  // Leitura periódica dos sensores
+  if (now - lastSensorRead >= SENSOR_INTERVAL) {
+    lastSensorRead = now;
+    lerSensores();
+    atualizarRGB(iqra);
+    mostrarTela(currentScreen); // atualiza o LCD com os valores novos
   }
 
-  // =====================
-  // CALCULO DOS PONTOS
-  // =====================
+  // Atualiza buzzer de forma não bloqueante
+  atualizarBuzzer(iqra);
 
-  int pTemp = pontosTemperatura(temperatura);
-  int pUmid = pontosUmidade(umidade);
-  int pMQ135 = pontosMQ(mq135);
-  int pMQ2 = pontosMQ(mq2);
-
-  // =====================
-  // IQRA
-  // =====================
-
-  int iqra = pTemp + pUmid + pMQ135 + pMQ2;
-
-  int nivel = (iqra / 10) + 1;
-
-  if (nivel > 10)
-    nivel = 10;
-
-  // =====================
-  // LED RGB
-  // =====================
-
-  switch (nivel) {
-
-    case 1: // Roxo
-      setColor(128, 0, 255);
-      break;
-
-    case 2: // Azul
-      setColor(0, 0, 255);
-      break;
-
-    case 3: // Ciano
-      setColor(0, 255, 255);
-      break;
-
-    case 4: // Verde
-      setColor(0, 255, 0);
-      break;
-
-    case 5: // Verde Forte
-      setColor(0, 180, 0);
-      break;
-
-    case 6: // Verde-Amarelado
-      setColor(180, 255, 0);
-      break;
-
-    case 7: // Amarelo
-      setColor(255, 255, 0);
-      break;
-
-    case 8: // Laranja
-      setColor(255, 120, 0);
-      break;
-
-    case 9: // Vermelho
-      setColor(255, 0, 0);
-      break;
-
-    case 10: // Vermelho Piscando
-
-      setColor(255, 0, 0);
-      delay(250);
-
-      setColor(0, 0, 0);
-      delay(250);
-
-      break;
+  // Troca de tela a cada 10s
+  if (now - lastScreenChange >= SCREEN_INTERVAL) {
+    lastScreenChange = now;
+    currentScreen = (currentScreen + 1) % 4;
+    mostrarTela(currentScreen);
   }
 
-  // =====================
-  // QUALIDADE
-  // =====================
-
-  String qualidade;
-
-  if (nivel == 1)
-    qualidade = "Excelente";
-  else if (nivel == 2)
-    qualidade = "Muito Boa";
-  else if (nivel == 3)
-    qualidade = "Boa";
-  else if (nivel == 4)
-    qualidade = "Aceitavel";
-  else if (nivel == 5)
-    qualidade = "Moderada";
-  else if (nivel == 6)
-    qualidade = "Atencao";
-  else if (nivel == 7)
-    qualidade = "Ruim";
-  else if (nivel == 8)
-    qualidade = "Muito Ruim";
-  else if (nivel == 9)
-    qualidade = "Critica";
-  else
-    qualidade = "PERIGO MAXIMO";
-
-  // =====================
-  // MONITOR SERIAL
-  // =====================
-
-  Serial.println();
-  Serial.println("======================================");
-  Serial.println("       SISTEMA IQRA - MONITOR");
-  Serial.println("======================================");
-
-  Serial.print("Temperatura : ");
-  Serial.print(temperatura);
-  Serial.println(" C");
-
-  Serial.print("Umidade     : ");
-  Serial.print(umidade);
-  Serial.println(" %");
-
-  Serial.print("MQ-135      : ");
-  Serial.println(mq135);
-
-  Serial.print("MQ-2        : ");
-  Serial.println(mq2);
-
-  Serial.println("--------------------------------------");
-
-  Serial.print("Pontos Temp : ");
-  Serial.println(pTemp);
-
-  Serial.print("Pontos Umid : ");
-  Serial.println(pUmid);
-
-  Serial.print("Pontos MQ135: ");
-  Serial.println(pMQ135);
-
-  Serial.print("Pontos MQ2  : ");
-  Serial.println(pMQ2);
-
-  Serial.println("--------------------------------------");
-
-  Serial.print("IQRA        : ");
-  Serial.println(iqra);
-
-  Serial.print("Nivel       : ");
-  Serial.print(nivel);
-  Serial.println("/10");
-
-  Serial.print("Qualidade   : ");
-  Serial.println(qualidade);
-
-  Serial.println("======================================");
-
-  delay(3000);
+  // Mostra a tela inicial imediatamente
+  static bool firstRun = true;
+  if (firstRun) {
+    mostrarTela(currentScreen);
+    firstRun = false;
+  }
 }
