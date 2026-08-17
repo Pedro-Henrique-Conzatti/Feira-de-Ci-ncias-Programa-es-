@@ -1,150 +1,313 @@
 #include <DHT.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <SoftwareWire.h>
 
-// ===== DHT11 =====
+// =====================================================
+// DHT11
+// =====================================================
 #define DHTPIN 7
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// ===== MQ135 / MQ2 =====
+// =====================================================
+// MQ135 / MQ2
+// =====================================================
 #define MQ135PIN A0
 #define MQ2PIN A1
 
-// ===== RGB =====
+// =====================================================
+// SENSOR DE CHUVA HM-028
+// =====================================================
+#define CHUVA_AO A5
+#define CHUVA_DO 43
+
+// =====================================================
+// SENSOR DE SOM KY-037
+// =====================================================
+#define SOM_AO A4
+
+const unsigned long DURACAO_FLASH_SOM = 300;
+
+const int LIMIAR_BAIXO    = 150;
+const int LIMIAR_MODERADO = 300;
+const int LIMIAR_ALERTA   = 450;
+const int LIMIAR_ALTO     = 700;
+const int LIMIAR_EXTREMO  = 950;
+
+// =====================================================
+// RTC DS1307 - HW-111
+// SDA = 2
+// SCL = 3
+// =====================================================
+#define RTC_SDA 2
+#define RTC_SCL 3
+
+SoftwareWire rtcWire(RTC_SDA, RTC_SCL);
+
+#define DS1307_ADDRESS 0x68
+
+// Timeout do RTC.
+// Se o RTC der problema, o programa nao fica travado.
+#define RTC_TIMEOUT_MS 50
+
+// false = nao reajusta normalmente
+// true  = ajusta pela hora da compilacao
+#define AJUSTAR_HORA_NA_COMPILACAO false
+
+// =====================================================
+// ESP32-CAM
+// Mega Serial2
+// TX2 = 16
+// RX2 = 17
+// =====================================================
+#define BAUD_ESP32CAM 115200
+
+// =====================================================
+// LED RGB
+// =====================================================
 #define RED 9
 #define GREEN 10
 #define BLUE 11
 
-// ===== BUZZER =====
+// =====================================================
+// BUZZER
+// =====================================================
 #define BUZZER 6
 
-// ===== LCD I2C 16x2 =====
+// =====================================================
+// LCD
+// =====================================================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// ===== CONTROLE DE TELAS =====
+// =====================================================
+// TEMPOS
+// =====================================================
 unsigned long lastScreenChange = 0;
 unsigned long lastSensorRead = 0;
-const unsigned long SCREEN_INTERVAL = 10000; // 10s por tela
-const unsigned long SENSOR_INTERVAL = 1000;  // leitura sensores cada 1s
-int currentScreen = 0; // 0..3
+unsigned long lastRTCRead = 0;
 
-// ===== VARIÁVEIS GLOBAIS DOS SENSORES =====
+const unsigned long SCREEN_INTERVAL = 10000;
+const unsigned long SENSOR_INTERVAL = 1000;
+const unsigned long RTC_INTERVAL = 1000;
+
+int currentScreen = 0;
+
+// =====================================================
+// SENSORES
+// =====================================================
 float temp = 0;
 float hum = 0;
+
 int mq135Raw = 0;
 int mq2Raw = 0;
+
 float mq135ppm = 0;
 float mq2ppm = 0;
-int iqra = 1; // 1 (ótimo) a 10 (péssimo)
 
-// ===== BUZZER STATE (não bloqueante) =====
+int iqra = 1;
+
+// =====================================================
+// CHUVA
+// =====================================================
+int chuvaAnalogico = 0;
+int chuvaDigital = HIGH;
+
+// =====================================================
+// SOM
+// =====================================================
+int somNivel = 0;
+
+bool somFlashAtivo = false;
+unsigned long somFlashFim = 0;
+
+bool fotoJaSolicitadaNesteEvento = false;
+
+// =====================================================
+// RTC
+// =====================================================
+byte segundo = 0;
+byte minuto = 0;
+byte hora = 0;
+
+byte diaSemana = 0;
+byte dia = 0;
+byte mes = 0;
+byte ano = 0;
+
+// =====================================================
+// ESP32-CAM
+// =====================================================
+String mensagemESP32 = "";
+String ultimaMensagemESP32 = "(nenhuma ainda)";
+
+// =====================================================
+// BUZZER
+// =====================================================
 bool buzzerOn = false;
 unsigned long buzzerToggleTime = 0;
 bool buzzerState = false;
 
-void setup() {
-  Serial.begin(9600);
-
-  dht.begin();
-
-  pinMode(RED, OUTPUT);
-  pinMode(GREEN, OUTPUT);
-  pinMode(BLUE, OUTPUT);
-  pinMode(BUZZER, OUTPUT);
-
-  lcd.init();
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Projeto Feira");
-  lcd.setCursor(0, 1);
-  lcd.print("Iniciando...");
-  delay(2000);
-  lcd.clear();
-}
-
-// ===== RGB =====
+// =====================================================
+// RGB
+// =====================================================
 void setColor(int r, int g, int b) {
+
   analogWrite(RED, r);
   analogWrite(GREEN, g);
   analogWrite(BLUE, b);
 }
 
-// ===== CONVERSÃO MQ135 -> ppm estimado (CO2 aproximado) =====
+// =====================================================
+// MQ135 -> PPM ESTIMADO
+// =====================================================
 float convertMQ135ToPPM(int raw) {
-  // Estimativa simplificada baseada na leitura analógica (0-1023)
-  // Faixa aproximada: 400 a 2000 ppm
-  float ppm = map(raw, 0, 1023, 400, 2000);
-  return ppm;
+
+  return map(raw, 0, 1023, 400, 2000);
 }
 
-// ===== CONVERSÃO MQ2 -> ppm estimado (gás/fumaça) =====
+// =====================================================
+// MQ2 -> PPM ESTIMADO
+// =====================================================
 float convertMQ2ToPPM(int raw) {
-  // Estimativa simplificada (0-1023 -> 200-10000 ppm aprox)
-  float ppm = map(raw, 0, 1023, 200, 10000);
-  return ppm;
+
+  return map(raw, 0, 1023, 200, 10000);
 }
 
-// ===== CÁLCULO DO IQRA (1 a 10, 10 = pior) =====
+// =====================================================
+// IQRA
+// =====================================================
 int calcularIQRA(float t, float h, float mq135, float mq2) {
+
   int score = 1;
 
   // Temperatura
-  if (t > 40) score = max(score, 10);
-  else if (t >= 35) score = max(score, 8);
-  else if (t >= 30) score = max(score, 5);
-  else if (t < 18) score = max(score, 4);
+  if (t > 40)
+    score = max(score, 10);
+
+  else if (t >= 35)
+    score = max(score, 8);
+
+  else if (t >= 30)
+    score = max(score, 5);
+
+  else if (t < 18)
+    score = max(score, 4);
 
   // Umidade
-  if (h < 20 || h > 98) score = max(score, 10);
-  else if (h < 30 || h > 70) score = max(score, 8);
-  else if (h < 40 || h > 60) score = max(score, 5);
+  if (h < 20 || h > 98)
+    score = max(score, 10);
 
-  // MQ135 (qualidade do ar - CO2 equivalente)
-  if (mq135 > 1500) score = max(score, 10);
-  else if (mq135 > 1000) score = max(score, 8);
-  else if (mq135 > 700) score = max(score, 5);
+  else if (h < 30 || h > 70)
+    score = max(score, 8);
 
-  // MQ2 (gás/fumaça)
-  if (mq2 > 6000) score = max(score, 10);
-  else if (mq2 > 3000) score = max(score, 8);
-  else if (mq2 > 1000) score = max(score, 5);
+  else if (h < 40 || h > 60)
+    score = max(score, 5);
+
+  // MQ135
+  if (mq135 > 1500)
+    score = max(score, 10);
+
+  else if (mq135 > 1000)
+    score = max(score, 8);
+
+  else if (mq135 > 700)
+    score = max(score, 5);
+
+  // MQ2
+  if (mq2 > 6000)
+    score = max(score, 10);
+
+  else if (mq2 > 3000)
+    score = max(score, 8);
+
+  else if (mq2 > 1000)
+    score = max(score, 5);
 
   return score;
 }
 
-// ===== ATUALIZA RGB BASEADO NO IQRA (1 cor por nivel) =====
+// =====================================================
+// RGB PELO IQRA
+// =====================================================
 void atualizarRGB(int nivel) {
+
   switch (nivel) {
-    case 1:  setColor(0, 0, 255);     break; // Azul        - Excelente
-    case 2:  setColor(0, 255, 255);   break; // Ciano       - Bom
-    case 3:  setColor(0, 255, 0);     break; // Verde       - Bom
-    case 4:  setColor(150, 255, 0);   break; // Verde-limao - Atencao
-    case 5:  setColor(255, 255, 0);   break; // Amarelo     - Atencao
-    case 6:  setColor(255, 180, 0);   break; // Amarelo-ouro- Atencao
-    case 7:  setColor(255, 80, 0);    break; // Laranja     - Perigoso
-    case 8:  setColor(255, 0, 150);   break; // Rosa/Magenta- Perigoso
-    case 9:  setColor(150, 0, 255);   break; // Roxo        - Critico
-    case 10: setColor(255, 0, 0);     break; // Vermelho    - Critico
-    default: setColor(255, 255, 255); break; // Branco      - Erro/fallback
+
+    case 1:
+      setColor(0, 0, 255);
+      break;
+
+    case 2:
+      setColor(0, 255, 255);
+      break;
+
+    case 3:
+      setColor(0, 255, 0);
+      break;
+
+    case 4:
+      setColor(150, 255, 0);
+      break;
+
+    case 5:
+      setColor(255, 255, 0);
+      break;
+
+    case 6:
+      setColor(255, 180, 0);
+      break;
+
+    case 7:
+      setColor(255, 80, 0);
+      break;
+
+    case 8:
+      setColor(255, 0, 150);
+      break;
+
+    case 9:
+      setColor(150, 0, 255);
+      break;
+
+    case 10:
+      setColor(255, 0, 0);
+      break;
+
+    default:
+      setColor(255, 255, 255);
+      break;
   }
 }
 
-// ===== BUZZER NÃO BLOQUEANTE (só nível 10) =====
-void atualizarBuzzer(int nivel) {
-  if (nivel >= 10) {
+// =====================================================
+// BUZZER
+// =====================================================
+void atualizarBuzzer(int nivel, bool somExtremo) {
+
+  if (nivel >= 10 || somExtremo) {
+
     buzzerOn = true;
+
   } else {
+
     buzzerOn = false;
+
     noTone(BUZZER);
+
     buzzerState = false;
   }
 
   if (buzzerOn) {
-    unsigned long now = millis();
-    if (now - buzzerToggleTime >= 150) {
-      buzzerToggleTime = now;
+
+    unsigned long agora = millis();
+
+    if (agora - buzzerToggleTime >= 150) {
+
+      buzzerToggleTime = agora;
+
       buzzerState = !buzzerState;
+
       if (buzzerState) {
         tone(BUZZER, 2000);
       } else {
@@ -154,13 +317,93 @@ void atualizarBuzzer(int nivel) {
   }
 }
 
-// ===== LEITURA DOS SENSORES =====
+// =====================================================
+// STATUS DO SOM
+// =====================================================
+String statusSom(int valor) {
+
+  if (valor >= LIMIAR_EXTREMO)
+    return "Extremo";
+
+  if (valor >= LIMIAR_ALTO)
+    return "Alto/Perigoso";
+
+  if (valor >= LIMIAR_ALERTA)
+    return "Alerta";
+
+  if (valor >= LIMIAR_MODERADO)
+    return "Moderado";
+
+  if (valor >= LIMIAR_BAIXO)
+    return "Baixo";
+
+  return "Muito Baixo";
+}
+
+// =====================================================
+// SOM
+// =====================================================
+bool verificarSom() {
+
+  somNivel = analogRead(SOM_AO);
+
+  bool somExtremo = (somNivel >= LIMIAR_EXTREMO);
+
+  // Flash RGB
+  if (!somFlashAtivo && somNivel >= LIMIAR_ALERTA) {
+
+    int r = random(0, 256);
+    int g = random(0, 256);
+    int b = random(0, 256);
+
+    setColor(r, g, b);
+
+    somFlashAtivo = true;
+
+    somFlashFim = millis() + DURACAO_FLASH_SOM;
+  }
+
+  // Finaliza flash
+  if (somFlashAtivo && millis() >= somFlashFim) {
+
+    somFlashAtivo = false;
+
+    atualizarRGB(iqra);
+  }
+
+  // ===================================================
+  // FOTO ESP32-CAM
+  // ===================================================
+  if (somNivel >= LIMIAR_ALTO) {
+
+    if (!fotoJaSolicitadaNesteEvento) {
+
+      solicitarFotoESP32CAM();
+
+      fotoJaSolicitadaNesteEvento = true;
+    }
+
+  } else {
+
+    fotoJaSolicitadaNesteEvento = false;
+  }
+
+  return somExtremo;
+}
+
+// =====================================================
+// LEITURA DOS SENSORES
+// =====================================================
 void lerSensores() {
+
   float t = dht.readTemperature();
   float h = dht.readHumidity();
 
-  if (!isnan(t)) temp = t;
-  if (!isnan(h)) hum = h;
+  if (!isnan(t))
+    temp = t;
+
+  if (!isnan(h))
+    hum = h;
 
   mq135Raw = analogRead(MQ135PIN);
   mq2Raw = analogRead(MQ2PIN);
@@ -168,129 +411,776 @@ void lerSensores() {
   mq135ppm = convertMQ135ToPPM(mq135Raw);
   mq2ppm = convertMQ2ToPPM(mq2Raw);
 
-  iqra = calcularIQRA(temp, hum, mq135ppm, mq2ppm);
+  iqra = calcularIQRA(
+    temp,
+    hum,
+    mq135ppm,
+    mq2ppm
+  );
 
+  chuvaAnalogico = analogRead(CHUVA_AO);
+
+  chuvaDigital = digitalRead(CHUVA_DO);
+
+  // Monitor serial
   Serial.print("Temp: ");
   Serial.print(temp);
+
   Serial.print(" C | Hum: ");
   Serial.print(hum);
+
   Serial.print(" % | MQ135: ");
   Serial.print(mq135ppm);
+
   Serial.print(" ppm | MQ2: ");
   Serial.print(mq2ppm);
+
   Serial.print(" ppm | IQRA: ");
-  Serial.println(iqra);
+  Serial.print(iqra);
+
+  Serial.print(" | Chuva AO: ");
+  Serial.print(chuvaAnalogico);
+
+  Serial.print(" | Chuva DO: ");
+  Serial.print(chuvaDigital);
+
+  Serial.print(" | Som: ");
+  Serial.print(somNivel);
+
+  Serial.print(" (");
+  Serial.print(statusSom(somNivel));
+  Serial.println(")");
 }
 
-// ===== LIMIARES DE NIVEL (STATUS GERAL) =====
-const int NIVEL_1  = 1;
-const int NIVEL_2  = 2;
-const int NIVEL_3  = 3;
-const int NIVEL_4  = 4;
-const int NIVEL_5  = 5;
-const int NIVEL_6  = 6;
-const int NIVEL_7  = 7;
-const int NIVEL_8  = 8;
-const int NIVEL_9  = 9;
-const int NIVEL_10 = 10;
-
-// ===== STATUS TEXTUAL DO IQRA =====
+// =====================================================
+// STATUS IQRA
+// =====================================================
 String statusIQRA(int nivel) {
-  if (nivel >= NIVEL_9)  return "Critico!";
-  if (nivel >= NIVEL_7)  return "Perigoso";
-  if (nivel >= NIVEL_4)  return "Atencao";
-  if (nivel >= NIVEL_2)  return "Bom";
+
+  if (nivel >= 9)
+    return "Critico!";
+
+  if (nivel >= 7)
+    return "Perigoso";
+
+  if (nivel >= 4)
+    return "Atencao";
+
+  if (nivel >= 2)
+    return "Bom";
+
   return "Excelente";
 }
 
-// ===== NIVEL SIMPLES PARA O MQ135 (qualidade do ar) =====
+// =====================================================
+// STATUS MQ135
+// =====================================================
 String nivelMQ135(float ppm) {
-  if (ppm > 1500) return "Muito poluido";
-  if (ppm > 1000) return "Poluido";
-  if (ppm > 700) return "Moderado";
+
+  if (ppm > 1500)
+    return "Muito poluido";
+
+  if (ppm > 1000)
+    return "Poluido";
+
+  if (ppm > 700)
+    return "Moderado";
+
   return "Ar limpo";
 }
 
-// ===== NIVEL SIMPLES PARA O MQ2 (gas/fumaca) =====
+// =====================================================
+// STATUS MQ2
+// =====================================================
 String nivelMQ2(float ppm) {
-  if (ppm > 6000) return "Muito gas!";
-  if (ppm > 3000) return "Gas alto";
-  if (ppm > 1000) return "Gas moderado";
+
+  if (ppm > 6000)
+    return "Muito gas!";
+
+  if (ppm > 3000)
+    return "Gas alto";
+
+  if (ppm > 1000)
+    return "Gas moderado";
+
   return "Sem gas";
 }
 
-// ===== TELAS DO LCD =====
+// =====================================================
+// STATUS CHUVA
+// =====================================================
+String statusChuva(int digital) {
+
+  if (digital == LOW)
+    return "Chovendo";
+
+  return "Ensolarado";
+}
+
+// =====================================================
+// BCD -> DECIMAL
+// =====================================================
+byte bcdParaDec(byte val) {
+
+  return ((val / 16 * 10) + (val % 16));
+}
+
+// =====================================================
+// DECIMAL -> BCD
+// =====================================================
+byte decParaBcd(byte val) {
+
+  return ((val / 10 * 16) + (val % 10));
+}
+
+// =====================================================
+// ESCREVE DATA/HORA NO RTC
+// =====================================================
+bool ajustarDataHora(
+  byte seg,
+  byte min,
+  byte hr,
+  byte diaSem,
+  byte d,
+  byte m,
+  byte a
+) {
+
+  rtcWire.beginTransmission(DS1307_ADDRESS);
+
+  rtcWire.write(0x00);
+
+  rtcWire.write(decParaBcd(seg));
+  rtcWire.write(decParaBcd(min));
+  rtcWire.write(decParaBcd(hr));
+  rtcWire.write(decParaBcd(diaSem));
+  rtcWire.write(decParaBcd(d));
+  rtcWire.write(decParaBcd(m));
+  rtcWire.write(decParaBcd(a));
+
+  return rtcWire.endTransmission() == 0;
+}
+
+// =====================================================
+// LÊ DATA/HORA DO RTC
+// =====================================================
+bool lerDataHora() {
+
+  rtcWire.beginTransmission(DS1307_ADDRESS);
+
+  rtcWire.write(0x00);
+
+  uint8_t erro = rtcWire.endTransmission();
+
+  if (erro != 0) {
+
+    return false;
+  }
+
+  int quantidade = rtcWire.requestFrom(
+    DS1307_ADDRESS,
+    7
+  );
+
+  if (quantidade != 7) {
+
+    return false;
+  }
+
+  if (rtcWire.available() < 7) {
+
+    return false;
+  }
+
+  byte novoSegundo =
+    bcdParaDec(rtcWire.read() & 0x7F);
+
+  byte novoMinuto =
+    bcdParaDec(rtcWire.read() & 0x7F);
+
+  byte novaHora =
+    bcdParaDec(rtcWire.read() & 0x3F);
+
+  byte novoDiaSem =
+    bcdParaDec(rtcWire.read() & 0x07);
+
+  byte novoDia =
+    bcdParaDec(rtcWire.read() & 0x3F);
+
+  byte novoMes =
+    bcdParaDec(rtcWire.read() & 0x1F);
+
+  byte novoAno =
+    bcdParaDec(rtcWire.read());
+
+  // ===================================================
+  // VALIDAÇÃO
+  // ===================================================
+  if (novoSegundo > 59)
+    return false;
+
+  if (novoMinuto > 59)
+    return false;
+
+  if (novaHora > 23)
+    return false;
+
+  if (novoDia < 1 || novoDia > 31)
+    return false;
+
+  if (novoMes < 1 || novoMes > 12)
+    return false;
+
+  // ===================================================
+  // SALVA OS VALORES
+  // ===================================================
+  segundo = novoSegundo;
+  minuto = novoMinuto;
+  hora = novaHora;
+
+  diaSemana = novoDiaSem;
+
+  dia = novoDia;
+  mes = novoMes;
+  ano = novoAno;
+
+  return true;
+}
+
+// =====================================================
+// CONVERTE MÊS DA COMPILAÇÃO
+// =====================================================
+byte mesParaNumero(char *mesTexto) {
+
+  const char meses[] =
+    "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+  char buf[4];
+
+  buf[0] = mesTexto[0];
+  buf[1] = mesTexto[1];
+  buf[2] = mesTexto[2];
+  buf[3] = '\0';
+
+  for (byte i = 0; i < 12; i++) {
+
+    if (
+      strncmp(
+        buf,
+        meses + (i * 3),
+        3
+      ) == 0
+    ) {
+
+      return i + 1;
+    }
+  }
+
+  return 1;
+}
+
+// =====================================================
+// AJUSTA RTC PELA HORA DE COMPILAÇÃO
+// =====================================================
+void ajustarHoraComHoraDeCompilacao() {
+
+  char dataCompilacao[] = __DATE__;
+  char horaCompilacao[] = __TIME__;
+
+  byte m =
+    mesParaNumero(dataCompilacao);
+
+  byte d =
+    atoi(dataCompilacao + 4);
+
+  int a =
+    atoi(dataCompilacao + 7);
+
+  byte h =
+    atoi(horaCompilacao);
+
+  byte mi =
+    atoi(horaCompilacao + 3);
+
+  byte s =
+    atoi(horaCompilacao + 6);
+
+  if (
+    ajustarDataHora(
+      s,
+      mi,
+      h,
+      1,
+      d,
+      m,
+      (byte)(a - 2000)
+    )
+  ) {
+
+    Serial.println(
+      "RTC ajustado pela hora de compilacao."
+    );
+
+  } else {
+
+    Serial.println(
+      "ERRO ao ajustar o RTC."
+    );
+  }
+}
+
+// =====================================================
+// ENVIA FOTO PARA ESP32-CAM
+// =====================================================
+void solicitarFotoESP32CAM() {
+
+  Serial2.println("FOTO");
+
+  Serial.println(
+    "Comando FOTO enviado ao ESP32-CAM."
+  );
+}
+
+// =====================================================
+// RECEBE ESP32-CAM
+// =====================================================
+void verificarESP32CAM() {
+
+  while (Serial2.available()) {
+
+    char c = Serial2.read();
+
+    if (c == '\n') {
+
+      mensagemESP32.trim();
+
+      if (mensagemESP32.length() > 0) {
+
+        ultimaMensagemESP32 =
+          mensagemESP32;
+
+        Serial.print(
+          "Recebido do ESP32-CAM: "
+        );
+
+        Serial.println(
+          ultimaMensagemESP32
+        );
+      }
+
+      mensagemESP32 = "";
+
+    } else {
+
+      mensagemESP32 += c;
+    }
+  }
+}
+
+// =====================================================
+// LCD
+// =====================================================
 void mostrarTela(int tela) {
+
   lcd.clear();
 
   switch (tela) {
-    case 0: // Temp / Umidade
+
+    // =================================================
+    // 0 - TEMPERATURA / UMIDADE
+    // =================================================
+    case 0:
+
       lcd.setCursor(0, 0);
-      lcd.print("Temperatura: ");
+
+      lcd.print("Temperatura:");
+
       lcd.print(temp, 1);
+
       lcd.print((char)223);
+
       lcd.print("C");
 
       lcd.setCursor(0, 1);
-      lcd.print("Umidade: ");
+
+      lcd.print("Umidade:");
+
       lcd.print(hum, 0);
+
       lcd.print("%");
+
       break;
 
-    case 1: // MQ135
+    // =================================================
+    // 1 - MQ135
+    // =================================================
+    case 1:
+
       lcd.setCursor(0, 0);
+
       lcd.print("Qualidade do ar:");
 
       lcd.setCursor(0, 1);
-      lcd.print(nivelMQ135(mq135ppm));
+
+      lcd.print(
+        nivelMQ135(mq135ppm)
+      );
+
       break;
 
-    case 2: // MQ2
+    // =================================================
+    // 2 - MQ2
+    // =================================================
+    case 2:
+
       lcd.setCursor(0, 0);
+
       lcd.print("Gas / Fumaca:");
 
       lcd.setCursor(0, 1);
-      lcd.print(nivelMQ2(mq2ppm));
+
+      lcd.print(
+        nivelMQ2(mq2ppm)
+      );
+
       break;
 
-    case 3: // IQRA + Status
+    // =================================================
+    // 3 - IQRA
+    // =================================================
+    case 3:
+
       lcd.setCursor(0, 0);
-      lcd.print("Nivel: ");
+
+      lcd.print("Nivel:");
+
       lcd.print(iqra);
+
       lcd.print("/10");
 
       lcd.setCursor(0, 1);
-      lcd.print("Status: ");
-      lcd.print(statusIQRA(iqra));
+
+      lcd.print("Status:");
+
+      lcd.print(
+        statusIQRA(iqra)
+      );
+
+      break;
+
+    // =================================================
+    // 4 - CHUVA
+    // =================================================
+    case 4:
+
+      lcd.setCursor(0, 0);
+
+      lcd.print("Chuva:");
+
+      lcd.print(
+        statusChuva(chuvaDigital)
+      );
+
+      lcd.setCursor(0, 1);
+
+      lcd.print("Analog:");
+
+      lcd.print(chuvaAnalogico);
+
+      break;
+
+    // =================================================
+    // 5 - SOM
+    // =================================================
+    case 5:
+
+      lcd.setCursor(0, 0);
+
+      lcd.print("Som:");
+
+      lcd.print(
+        statusSom(somNivel)
+      );
+
+      lcd.setCursor(0, 1);
+
+      lcd.print("Valor:");
+
+      lcd.print(somNivel);
+
+      break;
+
+    // =================================================
+    // 6 - DATA / HORA
+    // =================================================
+    case 6:
+
+      lcd.setCursor(0, 0);
+
+      lcd.print("Data:");
+
+      if (dia < 10)
+        lcd.print("0");
+
+      lcd.print(dia);
+
+      lcd.print("/");
+
+      if (mes < 10)
+        lcd.print("0");
+
+      lcd.print(mes);
+
+      lcd.print("/20");
+
+      if (ano < 10)
+        lcd.print("0");
+
+      lcd.print(ano);
+
+      lcd.setCursor(0, 1);
+
+      lcd.print("Hora:");
+
+      if (hora < 10)
+        lcd.print("0");
+
+      lcd.print(hora);
+
+      lcd.print(":");
+
+      if (minuto < 10)
+        lcd.print("0");
+
+      lcd.print(minuto);
+
+      lcd.print(":");
+
+      if (segundo < 10)
+        lcd.print("0");
+
+      lcd.print(segundo);
+
+      break;
+
+    // =================================================
+    // 7 - ESP32-CAM
+    // =================================================
+    case 7:
+
+      lcd.setCursor(0, 0);
+
+      lcd.print("ESP32-CAM:");
+
+      lcd.setCursor(0, 1);
+
+      lcd.print(
+        ultimaMensagemESP32
+      );
+
       break;
   }
 }
 
+// =====================================================
+// SETUP
+// =====================================================
+void setup() {
+
+  Serial.begin(9600);
+
+  // ESP32-CAM
+  Serial2.begin(BAUD_ESP32CAM);
+
+  // RTC
+  rtcWire.begin();
+
+  // IMPORTANTE:
+  // impede o SoftwareWire de ficar preso
+  // caso o RTC nao responda.
+  rtcWire.setTimeout(RTC_TIMEOUT_MS);
+
+  // DHT
+  dht.begin();
+
+  // Pinos
+  pinMode(RED, OUTPUT);
+  pinMode(GREEN, OUTPUT);
+  pinMode(BLUE, OUTPUT);
+
+  pinMode(BUZZER, OUTPUT);
+
+  pinMode(CHUVA_DO, INPUT);
+
+  // Aleatorio
+  randomSeed(analogRead(A2));
+
+  // LCD
+  lcd.init();
+  lcd.backlight();
+
+  lcd.setCursor(0, 0);
+  lcd.print("Projeto Feira");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Iniciando...");
+
+  // ===================================================
+  // AJUSTE MANUAL PELA COMPILACAO
+  // ===================================================
+  if (AJUSTAR_HORA_NA_COMPILACAO) {
+
+    ajustarHoraComHoraDeCompilacao();
+  }
+
+  // ===================================================
+  // PRIMEIRA LEITURA DO RTC
+  // ===================================================
+  bool rtcOK = lerDataHora();
+
+  // ===================================================
+  // SE ESTIVER EM 2000, CONSIDERA RTC ZERADO
+  // ===================================================
+  if (rtcOK && ano < 26) {
+
+    Serial.println(
+      "RTC zerado/invalido."
+    );
+
+    Serial.println(
+      "Ajustando pela hora de compilacao..."
+    );
+
+    ajustarHoraComHoraDeCompilacao();
+
+    lerDataHora();
+  }
+
+  if (!rtcOK) {
+
+    Serial.println(
+      "AVISO: RTC nao respondeu."
+    );
+  }
+
+  delay(2000);
+
+  lcd.clear();
+
+  mostrarTela(currentScreen);
+
+  Serial.println(
+    "================================"
+  );
+
+  Serial.println(
+    "Projeto Feira iniciado"
+  );
+
+  Serial.println(
+    "================================"
+  );
+}
+
+// =====================================================
+// LOOP
+// =====================================================
 void loop() {
-  unsigned long now = millis();
 
-  // Leitura periódica dos sensores
-  if (now - lastSensorRead >= SENSOR_INTERVAL) {
-    lastSensorRead = now;
+  unsigned long agora = millis();
+
+  bool somExtremo = false;
+
+  // ===================================================
+  // SENSORES
+  // ===================================================
+  if (
+    agora - lastSensorRead >=
+    SENSOR_INTERVAL
+  ) {
+
+    lastSensorRead = agora;
+
     lerSensores();
-    atualizarRGB(iqra);
-    mostrarTela(currentScreen); // atualiza o LCD com os valores novos
-  }
 
-  // Atualiza buzzer de forma não bloqueante
-  atualizarBuzzer(iqra);
+    if (!somFlashAtivo) {
 
-  // Troca de tela a cada 10s
-  if (now - lastScreenChange >= SCREEN_INTERVAL) {
-    lastScreenChange = now;
-    currentScreen = (currentScreen + 1) % 4;
+      atualizarRGB(iqra);
+    }
+
+    // Atualiza a tela atual com os dados novos
+    // sem depender do RTC.
     mostrarTela(currentScreen);
   }
 
-  // Mostra a tela inicial imediatamente
+  // ===================================================
+  // RTC
+  // ===================================================
+  if (
+    agora - lastRTCRead >=
+    RTC_INTERVAL
+  ) {
+
+    lastRTCRead = agora;
+
+    // Se o RTC falhar, o programa continua.
+    if (lerDataHora()) {
+
+      if (currentScreen == 6) {
+
+        mostrarTela(currentScreen);
+      }
+    }
+  }
+
+  // ===================================================
+  // SOM
+  // ===================================================
+  somExtremo =
+    verificarSom();
+
+  // ===================================================
+  // ESP32-CAM
+  // ===================================================
+  verificarESP32CAM();
+
+  // ===================================================
+  // BUZZER
+  // ===================================================
+  atualizarBuzzer(
+    iqra,
+    somExtremo
+  );
+
+  // ===================================================
+  // TROCA DE TELA
+  // ===================================================
+  if (
+    agora - lastScreenChange >=
+    SCREEN_INTERVAL
+  ) {
+
+    lastScreenChange = agora;
+
+    currentScreen++;
+
+    if (currentScreen >= 8) {
+
+      currentScreen = 0;
+    }
+
+    mostrarTela(currentScreen);
+  }
+
+  // ===================================================
+  // PRIMEIRA EXECUCAO
+  // ===================================================
   static bool firstRun = true;
+
   if (firstRun) {
+
     mostrarTela(currentScreen);
+
     firstRun = false;
   }
 }
